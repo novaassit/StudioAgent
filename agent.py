@@ -283,7 +283,14 @@ class StudioAgent:
                 print(f"\n⚠️ JSON 파싱 실패 ({self.consecutive_errors}회)")
                 print(f"   json.loads 에러: {json_err1}")
                 if json_err2: print(f"   extract+loads 에러: {json_err2}")
-                print(f"   앞 200자: {repr(raw_response[:200])}")
+                # 에러 위치 주변 표시
+                import re
+                col_match = re.search(r'char (\d+)', str(json_err1))
+                if col_match:
+                    pos = int(col_match.group(1))
+                    start = max(0, pos - 50)
+                    end = min(len(raw_response), pos + 50)
+                    print(f"   에러 위치 char {pos} 주변: ...{repr(raw_response[start:end])}...")
                 print(f"   뒤 200자: {repr(raw_response[-200:])}")
                 # 연속 오류 3회 이상이면 이전 오류 메시지를 정리하고 하나만 유지
                 if self.consecutive_errors >= 3:
