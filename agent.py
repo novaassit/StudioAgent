@@ -39,31 +39,42 @@ class StudioAgent:
     def __init__(self):
         print(f"\n🚀 StudioAgent 기동 완료 | 모델: {MODEL_NAME}")
         print("-" * 50)
-        self.history = [
-            {"role": "system", "content": """너는 최고의 시니어 소프트웨어 엔지니어다.
-            [엄격한 규칙]
-            1. 반드시 JSON으로 응답하라: {"thought": "...", "action": {"name": "...", "args": {...}}}
-            2. 생각(thought)만 하지 마라. 반드시 다음 단계에 필요한 도구(action)를 호출하라.
-            3. 할 일이 없다면 {"final_answer": "..."}를 출력하라.
-            4. 코드 수정 전에는 반드시 read_file로 내용을 확인하라.
-            """}
-        ]
-        self.last_action_key = ""
-        self.no_action_count = 0 # 무행동 카운트
+        self.system_prompt = """너는 최고의 시니어 소프트웨어 엔지니어다.
+        [응답 규칙 - 절대 준수]
+        항상 아래 JSON 형식 하나만 출력하라:
+        {
+          "thought": "현재 상황 분석 및 계획",
+          "action": {
+            "name": "도구명", 
+            "args": {"인자": "값"}
+          }
+        }
+        
+        [도구 목록]
+        - list_files: 폴더 목록 확인 (args: {"directory": "."})
+        - read_file: 파일 내용 읽기 (args: {"file_path": "파일명"})
+        - replace_in_file: 코드 수정 (args: {"file_path": "파일명", "old_text": "기존코드", "new_text": "새코드"})
+        - final_answer: 모든 작업 완료 보고
+        """
+        self.history = [{"role": "system", "content": self.system_prompt}]
+        self.last_raw_response = ""
+        self.repeat_count = 0
 
     def call_llm(self, retry_count=3):
         for attempt in range(retry_count):
             try:
-                if len(self.history) > 15:
-                    self.history = [self.history[0]] + self.history[-8:]
+                # 컨텍스트가 꼬이면 과감하게 압축
+                if len(self.history) > 12:
+                    self.history = [self.history[0]] + self.history[-6:]
                 
-                payload = {"model": MODEL_NAME, "messages": self.history, "temperature": 0.3}
+                payload = {"model": MODEL_NAME, "messages": self.history, "temperature": 0.4}
                 response = requests.post(f"{LM_STUDIO_API_BASE}/chat/completions", json=payload, timeout=120)
                 
                 if response.status_code == 200:
                     content = response.json()['choices'][0]['message']['content']
                     if content and content.strip(): return content
-                    self.history.append({"role": "user", "content": "응답이 비어 있습니다. 다음 행동을 JSON으로 즉시 호출하세요."})
+                
+                print(f"\n⚠️ 응답 부재. 재시도 중... ({attempt + 1})")
                 time.sleep(1)
             except Exception as e:
                 print(f"\n❌ 에러: {e}")
@@ -74,22 +85,41 @@ class StudioAgent:
         print(f"\n👤 User: {user_prompt}")
         self.history.append({"role": "user", "content": user_prompt})
         
-        turn_count = 0
-        while turn_count < 20: # 최대 20턴 제한
-            turn_count += 1
-            print(f"\n⏳ [Turn {turn_count}] 에이전트 생각 중...", end="\r")
+        turn = 0
+        while turn < 15:
+            turn += 1
+            print(f"\n⏳ [턴 {turn}] 에이전트 생각 중...", end="\r")
             raw_response = self.call_llm()
             if not raw_response: break
-                
+            
+            # 지능 붕괴 복구: 동일한 이상 응답 반복 감지
+            if raw_response == self.last_raw_response:
+                self.repeat_count += 1
+                if self.repeat_count >= 2:
+                    print("\n🚨 모델 고착 상태 감지! 히스토리를 강제 초기화합니다.")
+                    self.history = [{"role": "system", "content": self.system_prompt}, {"role": "user", "content": user_prompt}]
+                    self.repeat_count = 0
+                    continue
+            else:
+                self.repeat_count = 0
+            self.last_raw_response = raw_response
+
             json_str = extract_json_robustly(raw_response)
             try:
-                if not json_str: raise ValueError("JSON missing")
+                if not json_str: raise ValueError("No JSON")
                 llm_response = json.loads(json_str)
+                
+                # 자가 치유 (Self-Healing): 인자만 뱉었을 경우 구조 복구
+                if "action" not in llm_response:
+                    if "directory" in llm_response:
+                        llm_response = {"thought": "폴더 목록을 확인합니다.", "action": {"name": "list_files", "args": llm_response}}
+                    elif "file_path" in llm_response:
+                        llm_response = {"thought": "파일을 읽습니다.", "action": {"name": "read_file", "args": llm_response}}
             except:
-                self.history.append({"role": "user", "content": "오류: JSON 형식이 틀렸습니다. 다시 시도하세요."})
+                self.history.append({"role": "user", "content": "오류: JSON 형식을 지키세요. 예: {\"thought\": \"...\", \"action\": {\"name\": \"list_files\", \"args\": {\"directory\": \".\"}}}"})
                 continue
             
-            thought = llm_response.get('thought', '다음 단계를 준비합니다.')
+            thought = llm_response.get('thought', '진행 중...')
             print(f"\r🤔 생각: {thought}")
             
             if "final_answer" in llm_response:
@@ -98,46 +128,28 @@ class StudioAgent:
                 
             action = llm_response.get("action")
             if action:
-                self.no_action_count = 0 # 행동을 하면 카운트 초기화
-                if isinstance(action, str): name, args = action, {}
-                else: name, args = action.get("name"), action.get("args", {})
+                name = action.get("name")
+                args = action.get("args", {})
                 
+                # 정규화
                 if name in ["list_directory", "ls"]: name = "list_files"
                 if name in ["edit_file", "patch"]: name = "replace_in_file"
                 
-                # 중복 방지
-                action_key = f"{name}:{json.dumps(args, sort_keys=True)}"
-                if self.last_action_key == action_key:
-                    self.history.append({"role": "user", "content": "이미 수행한 결과입니다. 만족한다면 종료하거나 다른 파일을 수정하세요."})
-                    continue
-                self.last_action_key = action_key
-
                 print(f"🛠️ 실행: [{name}]")
                 path = args.get('file_path') or args.get('filepath') or args.get('path')
                 
                 if name == "list_files": result = list_files(directory=args.get('directory', '.'))
-                elif name == "read_file":
-                    result = read_file(file_path=path) if path else "Error: path missing"
-                    if not result.startswith("Error"): print(f"   📖 읽기 완료: {path}")
-                elif name == "write_file":
-                    result = write_file(file_path=path, content=args.get('content', ''))
+                elif name == "read_file": result = read_file(file_path=path)
+                elif name == "write_file": result = write_file(file_path=path, content=args.get('content', ''))
                 elif name == "replace_in_file":
                     result = replace_in_file(file_path=path, old_text=args.get('old_text', ''), new_text=args.get('new_text', ''))
-                    if not result.startswith("Error"): print(f"   ✂️ 수정 완료: {path}")
-                elif name == "execute_command": result = execute_command(**args)
                 else: result = f"Unknown tool: {name}"
                 
                 print(f"📊 결과: {str(result)[:60]}...")
                 self.history.append({"role": "assistant", "content": json.dumps(llm_response)})
                 self.history.append({"role": "system", "content": f"Tool Result: {result}"})
             else:
-                self.no_action_count += 1
-                if self.no_action_count >= 2:
-                    print("⚠️ 결정력 부족 감지. 행동 강제 중...")
-                    self.history.append({"role": "user", "content": "생각만 하지 말고, 구체적인 도구(list_files, read_file 등)를 사용하여 다음 단계를 수행하세요."})
-                    self.no_action_count = 0
-                else:
-                    self.history.append({"role": "assistant", "content": json.dumps(llm_response)})
+                self.history.append({"role": "assistant", "content": json.dumps(llm_response)})
 
 if __name__ == "__main__":
     agent = StudioAgent()
