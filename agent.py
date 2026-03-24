@@ -107,15 +107,21 @@ class StudioAgent:
                     path = args.get('file_path') or args.get('filepath') or args.get('path') or args.get('filename') or args.get('file')
                     if path:
                         result = read_file(file_path=path)
-                        print(f"   📖 읽기 완료: {path}")
+                        if result.startswith("Error"):
+                            print(f"   ❌ 읽기 실패: {path}")
+                        else:
+                            print(f"   📖 읽기 완료: {path}")
                     else:
-                        result = "Error: 파일 경로(file_path)가 누락되었습니다. 어떤 파일을 읽을지 'args'에 명시하세요."
+                        result = "Error: 파일 경로가 누락되었습니다. 정확한 파일명을 명시하세요."
                 elif name == "write_file":
                     path = args.get('file_path') or args.get('filepath') or args.get('path') or args.get('filename') or args.get('file')
                     content = args.get('content') or args.get('code') or args.get('text')
                     if path and content:
                         result = write_file(file_path=path, content=content)
-                        print(f"   📝 작성 완료: {path}")
+                        if result.startswith("Error"):
+                            print(f"   ❌ 작성 실패: {path}")
+                        else:
+                            print(f"   📝 작성 완료: {path}")
                     else:
                         result = "Error: file_path 또는 content가 누락되었습니다."
                 elif name == "execute_command":
