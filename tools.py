@@ -1,7 +1,7 @@
 import os
 import subprocess
 
-MAX_READ_CHARS = 3000  # LM Studio 컨텍스트 초과 방지
+MAX_READ_CHARS = 15000  # 500줄 이하 파일은 전체 전달 (컨텍스트 16k+ 기준)
 
 def list_files(directory="."):
     """디렉토리 내 파일 목록을 반환합니다."""

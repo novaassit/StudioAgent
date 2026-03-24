@@ -326,8 +326,7 @@ class StudioAgent:
                         self.action_log.append(f"read_file({first_file}): OK")
                         auto_response = {"thought": f"{first_file} 파일 내용을 확인합니다.", "action": {"name": "read_file", "args": {"file_path": first_file}}}
                         self.history.append({"role": "assistant", "content": json.dumps(auto_response, ensure_ascii=False)})
-                        result_trimmed = str(result)[:1500] if len(str(result)) > 1500 else str(result)
-                        self.history.append({"role": "user", "content": f"도구 실행 결과:\n{result_trimmed}\n\n위 결과를 바탕으로 수정할 부분을 찾아 replace_in_file로 수정하세요. JSON으로 응답하세요."})
+                        self.history.append({"role": "user", "content": f"도구 실행 결과:\n{result}\n\n위 결과를 바탕으로 수정할 부분을 찾아 replace_in_file로 수정하세요. JSON으로 응답하세요."})
                         continue
                 elif name == "read_file":
                     # 파일이 잘렸던 경우, execute_command로 특정 라인 범위를 읽도록 안내
@@ -353,10 +352,12 @@ class StudioAgent:
             self.action_log.append(f"{name}({path or args.get('directory', '.')}): {str(result)[:50]}")
             self.history.append({"role": "assistant", "content": json.dumps(llm_response, ensure_ascii=False)})
 
-            # 히스토리에 넣을 결과는 토큰 절약을 위해 길이 제한
+            # 히스토리에 넣을 결과 — read_file은 전체 유지, 나머지는 길이 제한
             result_str = str(result)
-            if len(result_str) > 1500:
-                # 앞 800자 + ... + 뒤 500자 (핵심 코드는 보통 앞뒤에 있음)
+            if name == "read_file":
+                # 파일 내용은 전체 전달 (LLM이 함수 간 상호작용을 파악하도록)
+                result_for_history = result_str
+            elif len(result_str) > 1500:
                 result_for_history = result_str[:800] + f"\n\n... (중략, 총 {len(result_str)}자) ...\n\n" + result_str[-500:]
             else:
                 result_for_history = result_str
