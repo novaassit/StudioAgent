@@ -41,18 +41,22 @@ class StudioAgent:
         print("-" * 50)
         self.history = [
             {"role": "system", "content": """너는 최고의 시니어 소프트웨어 엔지니어다.
-            [필수 규칙]
+            [필수 지침]
             1. 반드시 JSON 형식으로만 응답하라: {"thought": "...", "action": {"name": "...", "args": {...}}}
-            2. 디렉토리 내용을 볼 때는 `list_files`를, 파일 내용을 읽을 때는 `read_file`을 사용하라.
-            3. `read_file`에 디렉토리 경로(예: ".")를 넣지 마라.
-            4. 코드 수정 전에는 반드시 관련 파일을 먼저 읽어라.
+            2. 현재 폴더의 파일들을 보려면 반드시 `list_files`를 먼저 사용하라.
+            3. `read_file(".")`은 절대로 하지 마라. 디렉토리는 읽을 수 없다.
+            4. 코드 수정 전에는 반드시 관련 파일을 먼저 읽어서 내용을 파악하라.
             """}
         ]
 
     def call_llm(self, retry_count=3):
         for attempt in range(retry_count):
             try:
-                payload = {"model": MODEL_NAME, "messages": self.history}
+                payload = {
+                    "model": MODEL_NAME, 
+                    "messages": self.history,
+                    "temperature": 0.3 # 일관성을 위해 낮은 온도로 설정
+                }
                 response = requests.post(f"{LM_STUDIO_API_BASE}/chat/completions", json=payload, timeout=120)
                 
                 if response.status_code == 200:
@@ -60,11 +64,13 @@ class StudioAgent:
                     if content and content.strip():
                         return content
                     else:
-                        # 모델이 빈 응답을 보낼 경우 힌트를 추가하여 재시도 유도
-                        print(f"\n⚠️ 모델이 빈 응답을 보냈습니다. 가이드를 제공하고 재시도합니다. ({attempt + 1}/{retry_count})")
-                        self.history.append({"role": "system", "content": "오류: 응답이 비어 있습니다. 다음 단계에 대한 생각(thought)과 행동(action)을 JSON 형식으로 응답하세요."})
+                        print(f"\n⚠️ 모델이 빈 응답을 보냈습니다. 히스토리를 교정하고 다시 시도합니다. ({attempt + 1}/{retry_count})")
+                        # 마지막 실패 기록(있다면)을 제거하고 강력한 지시 주입
+                        if len(self.history) > 2:
+                            self.history.pop() # 에러 메시지 제거
+                        self.history.append({"role": "user", "content": "방금 전 응답이 비어있거나 경로 에러가 발생했습니다. '.'은 디렉토리이므로 read_file을 쓸 수 없습니다. 먼저 list_files로 파일 목록을 확인하고 정확한 파일명을 찾으세요."})
                 else:
-                    print(f"\n❌ 서버 응답 오류 ({response.status_code}): {response.text}")
+                    print(f"\n❌ 서버 응답 오류 ({response.status_code})")
                 
                 time.sleep(1)
             except Exception as e:
@@ -81,7 +87,7 @@ class StudioAgent:
             raw_response = self.call_llm()
             
             if not raw_response:
-                print("\n❌ 서버 응답 실패. 작업을 중단합니다.")
+                print("\n❌ 복구 실패. LM Studio 서버를 재시작하거나 모델을 확인하세요.")
                 break
                 
             json_str = extract_json_robustly(raw_response)
@@ -90,7 +96,7 @@ class StudioAgent:
                 llm_response = json.loads(json_str)
             except:
                 print(f"\n⚠️ 형식 오류 재교정 중...")
-                self.history.append({"role": "system", "content": "오류: JSON 형식이 올바르지 않습니다. {\"thought\": \"...\", \"action\": {...}} 형식을 엄격히 지켜주세요."})
+                self.history.append({"role": "user", "content": "오류: JSON 형식이 틀렸습니다. 반드시 {\"thought\": \"...\", \"action\": {...}} 형식으로만 응답하세요."})
                 continue
             
             thought = llm_response.get('thought', '분석 중...')
@@ -111,7 +117,6 @@ class StudioAgent:
                 if name in ["read_code", "get_code", "view_file"]: name = "read_file"
                 
                 print(f"🛠️ 실행: [{name}]")
-                result = ""
                 
                 if name == "list_files":
                     result = list_files(**args)
@@ -119,13 +124,13 @@ class StudioAgent:
                     path = args.get('file_path') or args.get('filepath') or args.get('path') or args.get('filename') or args.get('file')
                     if path:
                         if os.path.isdir(path):
-                            result = f"Error: '{path}'는 디렉토리입니다. 파일 목록을 보려면 list_files를 사용하세요."
+                            result = f"Error: '{path}'는 디렉토리입니다. 파일 내용을 보려면 정확한 파일명을 명시하세요. 폴더 목록은 list_files로 볼 수 있습니다."
                         else:
                             result = read_file(file_path=path)
                             if result.startswith("Error"): print(f"   ❌ 읽기 실패: {path}")
                             else: print(f"   📖 읽기 완료: {path}")
                     else:
-                        result = "Error: file_path가 누락되었습니다."
+                        result = "Error: 파일 경로가 누락되었습니다."
                 elif name == "write_file":
                     path = args.get('file_path') or args.get('filepath') or args.get('path') or args.get('filename') or args.get('file')
                     content = args.get('content') or args.get('code') or args.get('text')
@@ -140,7 +145,7 @@ class StudioAgent:
                 else:
                     result = f"Unknown tool: {name}"
                 
-                print(f"📊 결과: {str(result)[:50]}...")
+                print(f"📊 결과: {str(result)[:60]}...")
                 self.history.append({"role": "assistant", "content": json.dumps(llm_response)})
                 self.history.append({"role": "system", "content": f"Tool Result: {result}"})
             else:
