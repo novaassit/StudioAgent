@@ -36,14 +36,18 @@ def extract_json_robustly(text):
 
 class StudioAgent:
     def __init__(self):
-        print(f"\n🚀 StudioAgent 기동 완료")
-        print(f"🤖 모델: {MODEL_NAME}")
+        print(f"\n🚀 StudioAgent 기동 완료 | 모델: {MODEL_NAME}")
         print("-" * 50)
         self.history = [
-            {"role": "system", "content": """너는 시니어 코딩 에이전트다. 
-            - 반드시 JSON으로 응답하라.
-            - 한 번에 하나의 Action만 수행하라.
-            - 코드 수정 시 먼저 코드를 읽고(read_file), 분석 후 수정(write_file)하라.
+            {"role": "system", "content": """너는 최고의 시니어 소프트웨어 엔지니어다.
+            반드시 다음 JSON 형식을 엄격히 지켜 응답하라:
+            {"thought": "생각", "action": {"name": "도구명", "args": {"인자": "값"}}}
+            
+            [규정]
+            1. `read_file`이나 `write_file`을 쓸 때는 반드시 `args` 안에 `file_path`를 명시하라.
+               예: {"action": {"name": "read_file", "args": {"file_path": "index.html"}}}
+            2. 한 번에 한 단계씩만 진행하라.
+            3. 코드를 수정하기 전에는 반드시 `read_file`로 내용을 먼저 확인하라.
             """}
         ]
 
@@ -52,11 +56,11 @@ class StudioAgent:
             payload = {"model": MODEL_NAME, "messages": self.history}
             response = requests.post(f"{LM_STUDIO_API_BASE}/chat/completions", json=payload, timeout=120)
             if response.status_code != 200:
-                print(f"\n❌ 서버 에러 ({response.status_code}): {response.text}")
+                print(f"\n❌ 서버 에러: {response.status_code}")
                 return None
             return response.json()['choices'][0]['message']['content']
         except Exception as e:
-            print(f"\n❌ 서버 연결 실패: {e}")
+            print(f"\n❌ 연결 에러: {e}")
             return None
 
     def run(self, user_prompt):
@@ -66,21 +70,18 @@ class StudioAgent:
         while True:
             print("\n⏳ 에이전트 생각 중...", end="\r")
             raw_response = self.call_llm()
-            if not raw_response:
-                print("\n⚠️ 서버에서 응답이 없습니다. 종료합니다.")
-                break
+            if not raw_response: break
                 
             json_str = extract_json_robustly(raw_response)
             try:
-                if not json_str: raise ValueError("JSON 블록을 찾을 수 없습니다.")
+                if not json_str: raise ValueError("JSON missing")
                 llm_response = json.loads(json_str)
-            except Exception as e:
-                print(f"\n⚠️ 파싱 실패: {e}")
-                print(f"--- 원문 ---\n{raw_response[:200]}...\n------------")
-                self.history.append({"role": "system", "content": "오류: JSON 형식을 지켜주세요."})
+            except:
+                print(f"\n⚠️ 형식 재요청 중...")
+                self.history.append({"role": "system", "content": "오류: 반드시 JSON 형식으로 응답하고, 도구 사용 시 args를 포함하세요."})
                 continue
             
-            thought = llm_response.get('thought', '진행 중...')
+            thought = llm_response.get('thought', '분석 중...')
             print(f"\r🤔 생각: {thought}")
             
             if "final_answer" in llm_response:
@@ -89,19 +90,11 @@ class StudioAgent:
                 
             action = llm_response.get("action")
             if action:
-                # action이 문자열인 경우와 딕셔너리인 경우 모두 대응
                 if isinstance(action, str):
-                    name = action
-                    args = {}
+                    name, args = action, {}
                 else:
-                    name = action.get("name")
-                    args = action.get("args", {})
+                    name, args = action.get("name"), action.get("args", {})
                 
-                if not name:
-                    print("⚠️ 도구 이름이 명시되지 않았습니다.")
-                    continue
-                    
-                # 에일리어스 처리
                 if name in ["create_file", "update_file", "save_file"]: name = "write_file"
                 if name in ["read_code", "get_code", "view_file"]: name = "read_file"
                 
@@ -114,37 +107,33 @@ class StudioAgent:
                     path = args.get('file_path') or args.get('filepath') or args.get('path') or args.get('filename') or args.get('file')
                     if path:
                         result = read_file(file_path=path)
-                        print(f"   📖 파일 읽기 성공: {path}")
+                        print(f"   📖 읽기 완료: {path}")
                     else:
-                        result = "Error: Missing path"
+                        result = "Error: 파일 경로(file_path)가 누락되었습니다. 어떤 파일을 읽을지 'args'에 명시하세요."
                 elif name == "write_file":
                     path = args.get('file_path') or args.get('filepath') or args.get('path') or args.get('filename') or args.get('file')
                     content = args.get('content') or args.get('code') or args.get('text')
-                    if path:
+                    if path and content:
                         result = write_file(file_path=path, content=content)
-                        print(f"   📝 파일 작성 성공: {path}")
+                        print(f"   📝 작성 완료: {path}")
                     else:
-                        result = "Error: Missing path or content"
+                        result = "Error: file_path 또는 content가 누락되었습니다."
                 elif name == "execute_command":
                     result = execute_command(**args)
                 else:
                     result = f"Unknown tool: {name}"
                 
-                # 결과 가시화 (중요)
-                display_result = (str(result)[:100] + "...") if len(str(result)) > 100 else result
-                print(f"📊 결과: {display_result}")
+                print(f"📊 결과: {str(result)[:50]}...")
                 
-                # 히스토리에 기록하여 다음 루프 유도
                 self.history.append({"role": "assistant", "content": json.dumps(llm_response)})
                 self.history.append({"role": "system", "content": f"Tool Result: {result}"})
             else:
-                # 행동이 없는 경우 루프가 돌지 않으므로 히스토리에 추가 후 재시도
                 self.history.append({"role": "assistant", "content": json.dumps(llm_response)})
 
 if __name__ == "__main__":
     agent = StudioAgent()
     try:
-        user_input = input("\n명령을 입력하세요 > ")
+        user_input = input("\n명령 입력 > ")
         agent.run(user_input)
     except KeyboardInterrupt:
         print("\n👋 종료")
