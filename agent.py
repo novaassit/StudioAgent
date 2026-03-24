@@ -6,6 +6,24 @@ from tools import list_files, read_file, write_file, execute_command
 LM_STUDIO_API_BASE = "http://localhost:1234/v1"
 MODEL_NAME = "qwen/qwen3-coder-next" # 요청하신 모델명으로 업데이트 완료
 
+def extract_first_json(text):
+    """텍스트에서 첫 번째로 완성된 JSON 객체 하나만 추출합니다."""
+    if not text:
+        return None
+    start_idx = text.find('{')
+    if start_idx == -1:
+        return None
+    
+    brace_count = 0
+    for i in range(start_idx, len(text)):
+        if text[i] == '{':
+            brace_count += 1
+        elif text[i] == '}':
+            brace_count -= 1
+            if brace_count == 0:
+                return text[start_idx:i+1]
+    return None
+
 class StudioAgent:
     def __init__(self):
         print(f"\n🚀 StudioAgent 기동 중...")
@@ -23,10 +41,14 @@ class StudioAgent:
             3. write_file(file_path, content): 파일 생성 및 수정
             4. execute_command(command): 쉘 명령어 실행
             
+            ⚠️ 규정:
+            - 반드시 한 번에 **단 하나의 행동(Action)**만 수행하라.
+            - 응답은 반드시 JSON 형식으로만 하라.
+            - 여러 단계의 작업이 필요하다면, 현재 단계만 수행하고 결과를 기다려라.
+            
             응답 형식:
-            반드시 JSON 형식으로 응답하라. (생각과 행동을 분리)
-            예: {"thought": "파일 목록을 먼저 확인해야겠어.", "action": {"name": "list_files", "args": {"directory": "."}}}
-            만약 작업이 완료되었다면: {"thought": "작업을 완료했습니다.", "final_answer": "코드 작성을 마쳤습니다."}
+            {"thought": "생각 내용", "action": {"name": "도구이름", "args": {...}}}
+            만약 작업이 완료되었다면: {"thought": "완료", "final_answer": "최종결과"}
             """}
         ]
 
@@ -35,8 +57,6 @@ class StudioAgent:
             payload = {
                 "model": MODEL_NAME,
                 "messages": self.history,
-                # 일부 이전 모델이나 특정 설정에서 400 에러를 유발할 수 있어 일단 주석 처리하거나 확인 필요
-                # "response_format": {"type": "json_object"} 
             }
             response = requests.post(
                 f"{LM_STUDIO_API_BASE}/chat/completions",
@@ -64,24 +84,19 @@ class StudioAgent:
         while True:
             # LLM에게 생각과 행동 물어보기
             llm_response_str = self.call_llm()
-            if llm_response_str is None:
+            if not llm_response_str:
                 break
                 
-            # 유연한 JSON 파싱: 텍스트 내에서 첫 번째 { } 블록만 추출
+            # 개선된 JSON 파싱: 첫 번째 완성된 { } 블록만 추출
+            json_str = extract_first_json(llm_response_str)
             try:
-                # JSON이 시작되는 첫 { 와 마지막 } 를 찾음
-                start_idx = llm_response_str.find('{')
-                end_idx = llm_response_str.rfind('}')
-                if start_idx != -1 and end_idx != -1:
-                    json_str = llm_response_str[start_idx:end_idx+1]
-                    # 혹시 여러 개의 JSON이 붙어 있는 경우 첫 번째 객체만 가져오기 위해 정교화
-                    # 여기서는 단순화를 위해 전체 블록을 시도하고, 실패 시 대비함
+                if json_str:
                     llm_response = json.loads(json_str)
                 else:
                     raise ValueError("No JSON object found")
             except (json.JSONDecodeError, ValueError):
-                print(f"❌ 에러: LLM이 유효한 JSON을 응답하지 않았습니다. 다시 시도합니다...")
-                # LLM에게 형식을 지켜달라고 다시 요청
+                print(f"\n❌ 에러: LLM이 유효한 JSON을 응답하지 않았습니다.")
+                print(f"--- LLM 원문 응답 ---\n{llm_response_str}\n--------------------")
                 self.history.append({"role": "system", "content": "오류: JSON 형식이 올바르지 않습니다. 반드시 하나의 JSON 객체만 응답하세요."})
                 continue
             
@@ -108,10 +123,14 @@ class StudioAgent:
                 else: result = "Unknown tool"
                 
                 # 결과 기록
-                self.history.append({"role": "assistant", "content": llm_response_str})
+                self.history.append({"role": "assistant", "content": json.dumps(llm_response)})
                 self.history.append({"role": "system", "content": f"Tool Result: {result}"})
 
 if __name__ == "__main__":
     agent = StudioAgent()
-    # 테스트용 프롬프트
-    agent.run("현재 폴더의 파일을 확인하고 hello.py 파일을 만들어서 'print(\"hello world\")'를 작성해줘.")
+    # 터미널 입력을 받을 수 있도록 변경
+    try:
+        user_input = input("수행할 작업을 입력하세요: ")
+        agent.run(user_input)
+    except KeyboardInterrupt:
+        print("\n종료합니다.")
