@@ -4,10 +4,15 @@ from tools import list_files, read_file, write_file, execute_command
 
 # LM Studio 기본 설정 (필요에 따라 변경 가능)
 LM_STUDIO_API_BASE = "http://localhost:1234/v1"
-MODEL_NAME = "lmstudio-community/qwen2.5-7b-instruct" # 사용 중인 모델명으로 변경하세요.
+MODEL_NAME = "qwen/qwen3-coder-next" # 요청하신 모델명으로 업데이트 완료
 
 class StudioAgent:
     def __init__(self):
+        print(f"\n🚀 StudioAgent 기동 중...")
+        print(f"📡 서버 주소: {LM_STUDIO_API_BASE}")
+        print(f"🤖 사용 모델: {MODEL_NAME}")
+        print("-" * 30)
+        
         self.history = [
             {"role": "system", "content": """너는 숙련된 소프트웨어 엔지니어링 에이전트다. 
             파일을 분석하고, 코드를 작성하며, 명령을 실행하여 프로젝트를 관리한다.
@@ -27,16 +32,22 @@ class StudioAgent:
 
     def call_llm(self):
         try:
+            payload = {
+                "model": MODEL_NAME,
+                "messages": self.history,
+                # 일부 이전 모델이나 특정 설정에서 400 에러를 유발할 수 있어 일단 주석 처리하거나 확인 필요
+                # "response_format": {"type": "json_object"} 
+            }
             response = requests.post(
                 f"{LM_STUDIO_API_BASE}/chat/completions",
-                json={
-                    "model": MODEL_NAME,
-                    "messages": self.history,
-                    "response_format": {"type": "json_object"}
-                },
-                timeout=60 # 타임아웃 추가
+                json=payload,
+                timeout=60
             )
-            response.raise_for_status()
+            
+            if response.status_code != 200:
+                print(f"\n❌ 서버 응답 에러 ({response.status_code}): {response.text}")
+                return None
+                
             return response.json()['choices'][0]['message']['content']
         except requests.exceptions.ConnectionError:
             print(f"\n❌ 에러: LM Studio 서버({LM_STUDIO_API_BASE})에 연결할 수 없습니다.")
