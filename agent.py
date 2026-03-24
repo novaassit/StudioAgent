@@ -99,6 +99,11 @@ class StudioAgent:
             action = llm_response.get("action")
             if action:
                 name, args = action["name"], action.get("args", {})
+                
+                # 도구 이름 에일리어스 처리 (LLM이 다른 이름을 댈 경우 대비)
+                if name in ["create_file", "update_file", "save_file"]:
+                    name = "write_file"
+                
                 print(f"🛠️ 실행: [{name}]")
                 
                 if name == "list_files": result = list_files(**args)
