@@ -40,21 +40,15 @@ class StudioAgent:
         print(f"\n🚀 StudioAgent 기동 완료 | 모델: {MODEL_NAME}")
         print("-" * 50)
         self.system_prompt = """너는 최고의 시니어 소프트웨어 엔지니어다.
-        [응답 규칙 - 절대 준수]
-        항상 아래 JSON 형식 하나만 출력하라:
+        [응답 규칙]
+        반드시 아래 JSON 형식으로만 응답하라:
         {
-          "thought": "현재 상황 분석 및 계획",
-          "action": {
-            "name": "도구명", 
-            "args": {"인자": "값"}
-          }
+          "thought": "생각",
+          "action": {"name": "도구명", "args": {"key": "value"}}
         }
         
-        [도구 목록]
-        - list_files: 폴더 목록 확인 (args: {"directory": "."})
-        - read_file: 파일 내용 읽기 (args: {"file_path": "파일명"})
-        - replace_in_file: 코드 수정 (args: {"file_path": "파일명", "old_text": "기존코드", "new_text": "새코드"})
-        - final_answer: 모든 작업 완료 보고
+        [사용 가능 도구]
+        - list_files, read_file, replace_in_file, final_answer
         """
         self.history = [{"role": "system", "content": self.system_prompt}]
         self.last_raw_response = ""
@@ -63,18 +57,23 @@ class StudioAgent:
     def call_llm(self, retry_count=3):
         for attempt in range(retry_count):
             try:
-                # 컨텍스트가 꼬이면 과감하게 압축
-                if len(self.history) > 12:
-                    self.history = [self.history[0]] + self.history[-6:]
+                # 컨텍스트 압축 강화
+                if len(self.history) > 10:
+                    self.history = [self.history[0]] + self.history[-4:]
                 
-                payload = {"model": MODEL_NAME, "messages": self.history, "temperature": 0.4}
+                payload = {"model": MODEL_NAME, "messages": self.history, "temperature": 0.5} # 약간의 창의성 허용
                 response = requests.post(f"{LM_STUDIO_API_BASE}/chat/completions", json=payload, timeout=120)
                 
                 if response.status_code == 200:
                     content = response.json()['choices'][0]['message']['content']
                     if content and content.strip(): return content
                 
-                print(f"\n⚠️ 응답 부재. 재시도 중... ({attempt + 1})")
+                # 모델이 멍 때릴 때 주는 강력한 힌트 (One-shot Example)
+                print(f"\n⚠️ 모델 재교육 중... ({attempt + 1})")
+                self.history.append({
+                    "role": "user", 
+                    "content": "응답이 없습니다. 아래 예시처럼 JSON으로 답하세요:\n{\"thought\": \"파일 목록을 확인하겠습니다.\", \"action\": {\"name\": \"list_files\", \"args\": {\"directory\": \".\"}}}"
+                })
                 time.sleep(1)
             except Exception as e:
                 print(f"\n❌ 에러: {e}")
@@ -92,12 +91,15 @@ class StudioAgent:
             raw_response = self.call_llm()
             if not raw_response: break
             
-            # 지능 붕괴 복구: 동일한 이상 응답 반복 감지
-            if raw_response == self.last_raw_response:
+            # 고착 상태 탈출 (Panic Reset)
+            if raw_response == self.last_raw_response or "directory" in raw_response and "thought" not in raw_response:
                 self.repeat_count += 1
                 if self.repeat_count >= 2:
-                    print("\n🚨 모델 고착 상태 감지! 히스토리를 강제 초기화합니다.")
-                    self.history = [{"role": "system", "content": self.system_prompt}, {"role": "user", "content": user_prompt}]
+                    print("\n🚨 지능 붕괴 감지! 대화 초기화 및 재시작...")
+                    self.history = [
+                        {"role": "system", "content": self.system_prompt},
+                        {"role": "user", "content": f"상황을 리셋합니다. 다시 시작하세요: {user_prompt}"}
+                    ]
                     self.repeat_count = 0
                     continue
             else:
@@ -109,14 +111,14 @@ class StudioAgent:
                 if not json_str: raise ValueError("No JSON")
                 llm_response = json.loads(json_str)
                 
-                # 자가 치유 (Self-Healing): 인자만 뱉었을 경우 구조 복구
+                # 자가 치유 (Self-Healing)
                 if "action" not in llm_response:
                     if "directory" in llm_response:
-                        llm_response = {"thought": "폴더 목록을 확인합니다.", "action": {"name": "list_files", "args": llm_response}}
+                        llm_response = {"thought": "목록 확인", "action": {"name": "list_files", "args": llm_response}}
                     elif "file_path" in llm_response:
-                        llm_response = {"thought": "파일을 읽습니다.", "action": {"name": "read_file", "args": llm_response}}
+                        llm_response = {"thought": "파일 읽기", "action": {"name": "read_file", "args": llm_response}}
             except:
-                self.history.append({"role": "user", "content": "오류: JSON 형식을 지키세요. 예: {\"thought\": \"...\", \"action\": {\"name\": \"list_files\", \"args\": {\"directory\": \".\"}}}"})
+                self.history.append({"role": "user", "content": "오류! JSON 형식만 사용하세요. 예: {\"thought\": \"...\", \"action\": {...}}"})
                 continue
             
             thought = llm_response.get('thought', '진행 중...')
@@ -128,10 +130,7 @@ class StudioAgent:
                 
             action = llm_response.get("action")
             if action:
-                name = action.get("name")
-                args = action.get("args", {})
-                
-                # 정규화
+                name, args = action.get("name"), action.get("args", {})
                 if name in ["list_directory", "ls"]: name = "list_files"
                 if name in ["edit_file", "patch"]: name = "replace_in_file"
                 
