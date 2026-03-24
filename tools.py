@@ -33,11 +33,12 @@ def replace_in_file(file_path, old_text, new_text):
     """파일 내 특정 텍스트를 찾아 교체합니다."""
     try:
         if not os.path.exists(file_path):
-            return f"Error: File {file_path} not found"
+            return f"Error: File {file_path} not found. Use write_file to create it first."
         with open(file_path, "r", encoding="utf-8") as f:
             content = f.read()
         if old_text not in content:
-            return f"Error: Original text not found in {file_path}"
+            preview = content[:200] if len(content) > 200 else content
+            return f"Error: old_text not found in {file_path}. Use read_file to check current content. File preview:\n{preview}"
         new_content = content.replace(old_text, new_text)
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(new_content)
