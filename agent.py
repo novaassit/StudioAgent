@@ -318,7 +318,8 @@ class StudioAgent:
                         self.action_log.append(f"read_file({first_file}): OK")
                         auto_response = {"thought": f"{first_file} 파일 내용을 확인합니다.", "action": {"name": "read_file", "args": {"file_path": first_file}}}
                         self.history.append({"role": "assistant", "content": json.dumps(auto_response, ensure_ascii=False)})
-                        self.history.append({"role": "user", "content": f"도구 실행 결과:\n{result}\n\n위 결과를 바탕으로 수정할 부분을 찾아 replace_in_file로 수정하세요. JSON으로 응답하세요."})
+                        result_trimmed = str(result)[:1500] if len(str(result)) > 1500 else str(result)
+                        self.history.append({"role": "user", "content": f"도구 실행 결과:\n{result_trimmed}\n\n위 결과를 바탕으로 수정할 부분을 찾아 replace_in_file로 수정하세요. JSON으로 응답하세요."})
                         continue
                 elif name == "read_file":
                     # 파일이 잘렸던 경우, execute_command로 특정 라인 범위를 읽도록 안내
@@ -343,7 +344,19 @@ class StudioAgent:
             self.last_result = result
             self.action_log.append(f"{name}({path or args.get('directory', '.')}): {str(result)[:50]}")
             self.history.append({"role": "assistant", "content": json.dumps(llm_response, ensure_ascii=False)})
-            self.history.append({"role": "user", "content": f"도구 실행 결과:\n{result}\n\n위 결과를 바탕으로 다음 action을 JSON으로 응답하세요."})
+
+            # 히스토리에 넣을 결과는 토큰 절약을 위해 길이 제한
+            result_str = str(result)
+            if len(result_str) > 1500:
+                # 앞 800자 + ... + 뒤 500자 (핵심 코드는 보통 앞뒤에 있음)
+                result_for_history = result_str[:800] + f"\n\n... (중략, 총 {len(result_str)}자) ...\n\n" + result_str[-500:]
+            else:
+                result_for_history = result_str
+
+            if name == "replace_in_file" or name == "write_file":
+                self.history.append({"role": "user", "content": f"도구 실행 결과:\n{result_for_history}\n\n수정이 완료되었으면 final_answer로 보고하세요. 추가 수정이 필요하면 계속하세요."})
+            else:
+                self.history.append({"role": "user", "content": f"도구 실행 결과:\n{result_for_history}\n\n위 결과를 바탕으로 다음 action을 JSON으로 응답하세요."})
 
 if __name__ == "__main__":
     agent = StudioAgent()
