@@ -265,13 +265,18 @@ class StudioAgent:
             # JSON 파싱
             json_str = extract_json_robustly(raw_response)
             try:
-                if not json_str: raise ValueError("No JSON")
+                if not json_str: raise ValueError("No JSON extracted")
                 llm_response = json.loads(json_str)
-            except:
+            except Exception as parse_err:
                 self.consecutive_errors += 1
+                print(f"\n⚠️ JSON 파싱 실패 ({self.consecutive_errors}회): {parse_err}")
+                print(f"   raw_response 길이: {len(raw_response)}, 앞 200자: {raw_response[:200]}")
+                if json_str:
+                    print(f"   extract 결과 길이: {len(json_str)}, 앞 200자: {json_str[:200]}")
+                else:
+                    print(f"   extract 결과: None")
                 # 연속 오류 3회 이상이면 이전 오류 메시지를 정리하고 하나만 유지
                 if self.consecutive_errors >= 3:
-                    # 히스토리에서 연속 오류 메시지 제거
                     while len(self.history) > 2 and self.history[-1].get("role") == "user" and "오류" in self.history[-1].get("content", ""):
                         self.history.pop()
                 self.history.append({"role": "user", "content": 'JSON 형식 오류. 반드시 이 형식으로 응답: {"thought": "생각", "action": {"name": "도구명", "args": {...}}}'})
