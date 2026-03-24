@@ -272,7 +272,12 @@ class StudioAgent:
 
             # 동일 도구+인자 반복 호출 감지 → 자동 실행
             path = args.get('file_path') or args.get('filepath') or args.get('path')
-            current_action = (name, path or args.get('directory', ''))
+            # execute_command는 command 값으로 비교, 나머지는 path로 비교
+            if name == "execute_command":
+                action_key = args.get('command', '')
+            else:
+                action_key = path or args.get('directory', '')
+            current_action = (name, action_key)
             if current_action == self.last_action:
                 print(f"⚠️ 동일 도구 반복 감지: [{name}] → 자동 진행")
                 if name == "list_files" and self.last_result:
@@ -289,6 +294,11 @@ class StudioAgent:
                         self.history.append({"role": "user", "content": f"도구 실행 결과:\n{result}\n\n위 결과를 바탕으로 수정할 부분을 찾아 replace_in_file로 수정하세요. JSON으로 응답하세요."})
                         continue
                 elif name == "read_file":
+                    # 파일이 잘렸던 경우, execute_command로 특정 라인 범위를 읽도록 안내
+                    if self.last_result and "파일이 너무 길어" in str(self.last_result):
+                        self.history.append({"role": "assistant", "content": json.dumps(llm_response, ensure_ascii=False)})
+                        self.history.append({"role": "user", "content": f"파일이 길어서 잘렸습니다. execute_command로 특정 부분을 읽으세요. 예: grep -n 'dropInterval' {path} 또는 sed -n '200,300p' {path}"})
+                        continue
                     self.history.append({"role": "assistant", "content": json.dumps(llm_response, ensure_ascii=False)})
                     self.history.append({"role": "user", "content": f"이미 {path} 파일을 읽었습니다. 이제 replace_in_file로 수정하거나 write_file로 덮어쓰세요. JSON으로 응답하세요."})
                     continue
