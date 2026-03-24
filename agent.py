@@ -317,6 +317,12 @@ class StudioAgent:
 
             if not raw_response:
                 empty_count += 1
+                # 수정 도구 성공 후 빈 응답 → 작업 완료로 간주
+                if self.last_action and self.last_action[0] in ("replace_in_file", "write_file") and self.last_result and "Success" in str(self.last_result):
+                    print(f"\n🏁 파일 수정 완료 후 LLM 무응답 → 자동 완료 처리")
+                    summary = "\n".join(self.action_log[-5:]) if self.action_log else "작업 없음"
+                    print(f"📋 수행된 작업:\n{summary}")
+                    break
                 # LLM 무응답 → 마지막 도구 결과 기반 자동 진행
                 if self.last_action and self.last_action[0] == "list_files" and self.last_result:
                     first_file = self.last_result.strip().split('\n')[0].strip()
