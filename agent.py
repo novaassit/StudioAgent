@@ -262,11 +262,19 @@ class StudioAgent:
                 print(f"\n⚠️ LLM 무응답 ({empty_count}/3). 재시도...")
                 continue
 
-            # JSON 파싱
-            json_str = extract_json_robustly(raw_response)
+            # JSON 파싱: json.loads 먼저 시도, 실패 시 extract_json_robustly 사용
+            llm_response = None
             try:
-                if not json_str: raise ValueError("No JSON extracted")
-                llm_response = json.loads(json_str)
+                llm_response = json.loads(raw_response.strip())
+            except:
+                json_str = extract_json_robustly(raw_response)
+                if json_str:
+                    try:
+                        llm_response = json.loads(json_str)
+                    except:
+                        pass
+            try:
+                if not llm_response: raise ValueError("JSON 파싱 실패")
             except Exception as parse_err:
                 self.consecutive_errors += 1
                 print(f"\n⚠️ JSON 파싱 실패 ({self.consecutive_errors}회): {parse_err}")
