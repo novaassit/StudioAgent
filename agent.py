@@ -22,15 +22,29 @@ LM_STUDIO_API_BASE = "http://localhost:1234/v1"
 MODEL_NAME = "qwen/qwen3-coder-next"
 
 def extract_json_robustly(text):
-    """중괄호 쌍을 맞춰 유효한 JSON 블록을 추출합니다."""
+    """중괄호 쌍을 맞춰 유효한 JSON 블록을 추출합니다. 문자열 내부 중괄호는 무시."""
     if not text: return None
     text = text.replace("```json", "").replace("```", "").strip()
     start_idx = text.find('{')
     if start_idx == -1: return None
     brace_count = 0
+    in_string = False
+    escape = False
     for i in range(start_idx, len(text)):
-        if text[i] == '{': brace_count += 1
-        elif text[i] == '}':
+        c = text[i]
+        if escape:
+            escape = False
+            continue
+        if c == '\\' and in_string:
+            escape = True
+            continue
+        if c == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if c == '{': brace_count += 1
+        elif c == '}':
             brace_count -= 1
             if brace_count == 0: return text[start_idx:i+1]
     return None
@@ -131,9 +145,13 @@ class StudioAgent:
             if response.status_code == 200:
                 content = response.json()['choices'][0]['message']['content']
                 if content and content.strip():
-                    # LLM 응답이 너무 길면 (반복 생성 감지) 앞부분만 사용
-                    if len(content) > 2000:
-                        content = content[:2000]
+                    # LLM 응답이 너무 길면 유효 JSON만 추출 (반복 생성 방지)
+                    if len(content) > 4000:
+                        extracted = extract_json_robustly(content)
+                        if extracted:
+                            content = extracted
+                        else:
+                            content = content[:4000]
                     return content
             return None
         except Exception as e:
@@ -197,12 +215,14 @@ class StudioAgent:
         self.history.append({"role": "user", "content": user_prompt})
 
         turn = 0
+        empty_count = 0  # 연속 빈 응답 카운터
         while turn < 15:
             turn += 1
             print(f"\n⏳ [턴 {turn}] 에이전트 생각 중...", end="\r")
             raw_response = self.call_llm_with_retry()
 
             if not raw_response:
+                empty_count += 1
                 # LLM 무응답 → 마지막 도구 결과 기반 자동 진행
                 if self.last_action and self.last_action[0] == "list_files" and self.last_result:
                     first_file = self.last_result.strip().split('\n')[0].strip()
@@ -216,9 +236,15 @@ class StudioAgent:
                         auto_response = {"thought": f"{first_file} 파일을 읽어 내용을 확인합니다.", "action": {"name": "read_file", "args": {"file_path": first_file}}}
                         self.history.append({"role": "assistant", "content": json.dumps(auto_response, ensure_ascii=False)})
                         self.history.append({"role": "user", "content": f"도구 실행 결과:\n{result}\n\n위 결과를 바탕으로 수정이 필요한 부분을 찾아 replace_in_file로 수정하세요. JSON으로 응답하세요."})
+                        empty_count = 0
                         continue
-                print("\n⚠️ LLM 응답 없음. 종료합니다.")
-                break
+                if empty_count >= 3:
+                    print(f"\n⚠️ LLM 연속 무응답 ({empty_count}회). 지금까지의 작업을 보고합니다.")
+                    summary = "\n".join(self.action_log[-5:]) if self.action_log else "작업 없음"
+                    print(f"📋 수행된 작업:\n{summary}")
+                    break
+                print(f"\n⚠️ LLM 무응답 ({empty_count}/3). 재시도...")
+                continue
 
             # JSON 파싱
             json_str = extract_json_robustly(raw_response)
@@ -236,6 +262,7 @@ class StudioAgent:
                 continue
 
             self.consecutive_errors = 0  # 성공적으로 파싱되면 리셋
+            empty_count = 0  # 빈 응답 카운터도 리셋
 
             thought = llm_response.get('thought', '진행 중...')
             print(f"\r🤔 생각: {thought}")
