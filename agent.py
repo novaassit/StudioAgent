@@ -6,6 +6,7 @@
 # ///
 
 import json
+import re
 import requests
 import os
 import sys
@@ -48,6 +49,83 @@ def extract_json_robustly(text):
             brace_count -= 1
             if brace_count == 0: return text[start_idx:i+1]
     return None
+
+
+def parse_llm_response_fallback(text):
+    """json.loads 실패 시 regex로 thought와 action을 추출합니다."""
+    if not text: return None
+    result = {}
+
+    # thought 추출
+    thought_match = re.search(r'"thought"\s*:\s*"((?:[^"\\]|\\.)*)"', text, re.DOTALL)
+    if thought_match:
+        result['thought'] = thought_match.group(1).replace('\\n', '\n').replace('\\"', '"')
+
+    # action name 추출
+    name_match = re.search(r'"name"\s*:\s*"([^"]+)"', text)
+    if name_match:
+        action_name = name_match.group(1)
+        args = {}
+
+        # file_path 추출
+        fp_match = re.search(r'"file_path"\s*:\s*"([^"]+)"', text)
+        if fp_match:
+            args['file_path'] = fp_match.group(1)
+
+        # command 추출
+        cmd_match = re.search(r'"command"\s*:\s*"((?:[^"\\]|\\.)*)"', text, re.DOTALL)
+        if cmd_match:
+            args['command'] = cmd_match.group(1).replace('\\n', '\n').replace('\\"', '"')
+
+        # directory 추출
+        dir_match = re.search(r'"directory"\s*:\s*"([^"]*)"', text)
+        if dir_match:
+            args['directory'] = dir_match.group(1)
+
+        # old_text와 new_text: "old_text": "..." 패턴으로 추출 (가장 길게 매칭)
+        for key in ['old_text', 'new_text', 'content']:
+            # 해당 키의 시작 위치를 찾고, 그 뒤의 문자열 값을 추출
+            key_pattern = f'"{key}"\\s*:\\s*"'
+            key_match = re.search(key_pattern, text)
+            if key_match:
+                start = key_match.end()
+                # 이스케이프되지 않은 " 를 찾아서 문자열 끝 결정
+                i = start
+                while i < len(text):
+                    if text[i] == '\\' and i + 1 < len(text):
+                        i += 2  # 이스케이프 시퀀스 스킵
+                        continue
+                    if text[i] == '"':
+                        break
+                    i += 1
+                if i < len(text):
+                    val = text[start:i]
+                    args[key] = val.replace('\\n', '\n').replace('\\t', '\t').replace('\\"', '"').replace('\\\\', '\\')
+
+        result['action'] = {'name': action_name, 'args': args}
+        return result
+
+    # final_answer 추출
+    fa_match = re.search(r'"final_answer"\s*:\s*"((?:[^"\\]|\\.)*)"', text, re.DOTALL)
+    if fa_match:
+        result['final_answer'] = fa_match.group(1).replace('\\n', '\n').replace('\\"', '"')
+        return result
+
+    # 도구 이름이 키로 된 형태: {"replace_in_file": {"file_path": ...}}
+    for tool in KNOWN_TOOLS:
+        if f'"{tool}"' in text:
+            name_match = re.search(f'"{tool}"\\s*:', text)
+            if name_match:
+                result['thought'] = result.get('thought', '진행 중...')
+                result['action'] = {tool: {}}  # normalize_action이 처리
+                # file_path 등 기본 인자 추출
+                fp_match = re.search(r'"file_path"\s*:\s*"([^"]+)"', text)
+                if fp_match:
+                    result['action'][tool]['file_path'] = fp_match.group(1)
+                return result
+
+    return None
+
 
 # 알려진 도구 이름 집합
 KNOWN_TOOLS = {"list_files", "read_file", "write_file", "replace_in_file", "execute_command", "final_answer"}
@@ -262,36 +340,25 @@ class StudioAgent:
                 print(f"\n⚠️ LLM 무응답 ({empty_count}/3). 재시도...")
                 continue
 
-            # JSON 파싱: strict=False로 문자열 내 줄바꿈 허용
+            # JSON 파싱: 3단계 시도 (json.loads → extract+loads → regex 폴백)
             llm_response = None
-            json_err1 = None
-            json_err2 = None
             try:
                 llm_response = json.loads(raw_response.strip(), strict=False)
-            except Exception as e1:
-                json_err1 = str(e1)
+            except:
                 json_str = extract_json_robustly(raw_response)
                 if json_str:
                     try:
                         llm_response = json.loads(json_str, strict=False)
-                    except Exception as e2:
-                        json_err2 = str(e2)
-            try:
-                if not llm_response: raise ValueError("JSON 파싱 실패")
-            except Exception as parse_err:
+                    except:
+                        pass
+                # 3단계: regex 폴백 파서
+                if not llm_response:
+                    llm_response = parse_llm_response_fallback(raw_response)
+                    if llm_response:
+                        print(f"\n🔧 JSON 파싱 실패 → regex 폴백으로 복구 성공")
+            if not llm_response:
                 self.consecutive_errors += 1
-                print(f"\n⚠️ JSON 파싱 실패 ({self.consecutive_errors}회)")
-                print(f"   json.loads 에러: {json_err1}")
-                if json_err2: print(f"   extract+loads 에러: {json_err2}")
-                # 에러 위치 주변 표시
-                import re
-                col_match = re.search(r'char (\d+)', str(json_err1))
-                if col_match:
-                    pos = int(col_match.group(1))
-                    start = max(0, pos - 50)
-                    end = min(len(raw_response), pos + 50)
-                    print(f"   에러 위치 char {pos} 주변: ...{repr(raw_response[start:end])}...")
-                print(f"   뒤 200자: {repr(raw_response[-200:])}")
+                print(f"\n⚠️ 모든 파싱 실패 ({self.consecutive_errors}회): {repr(raw_response[:100])}...")
                 # 연속 오류 3회 이상이면 이전 오류 메시지를 정리하고 하나만 유지
                 if self.consecutive_errors >= 3:
                     while len(self.history) > 2 and self.history[-1].get("role") == "user" and "오류" in self.history[-1].get("content", ""):
