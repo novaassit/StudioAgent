@@ -10,7 +10,7 @@ import requests
 import os
 import sys
 
-# 실행 파일의 위치를 경로에 추가하여 어디서든 tools를 임포트할 수 있게 함
+# 실행 파일의 위치를 경로에 추가
 script_dir = os.path.dirname(os.path.abspath(__file__))
 if script_dir not in sys.path:
     sys.path.append(script_dir)
@@ -59,15 +59,15 @@ class StudioAgent:
             [응답 규칙]
             - 반드시 한 번에 하나의 Action만 수행하라.
             - 반드시 JSON 형식으로만 응답하라.
-            - 형식: {"thought": "당신의 전략적 사고", "action": {"name": "도구명", "args": {...}}}
-            - 완료 시: {"thought": "분석 결과", "final_answer": "최종 결과 보고"}
+            - 형식: {"thought": "생각 내용", "action": {"name": "도구명", "args": {...}}}
+            - 완료 시: {"thought": "완료", "final_answer": "최종 결과 보고"}
             """}
         ]
 
     def call_llm(self):
         try:
             payload = {"model": MODEL_NAME, "messages": self.history}
-            response = requests.post(f"{LM_STUDIO_API_BASE}/chat/completions", json=payload, timeout=90)
+            response = requests.post(f"{LM_STUDIO_API_BASE}/chat/completions", json=payload, timeout=120)
             if response.status_code != 200:
                 print(f"\n❌ 서버 에러: {response.text}")
                 return None
@@ -81,6 +81,7 @@ class StudioAgent:
         self.history.append({"role": "user", "content": user_prompt})
         
         while True:
+            print("\n⏳ 에이전트가 생각 중입니다...", end="\r")
             llm_response_str = self.call_llm()
             if not llm_response_str: break
                 
@@ -89,15 +90,15 @@ class StudioAgent:
                 if not json_str: raise ValueError("No JSON found")
                 llm_response = json.loads(json_str)
             except:
-                print(f"\n⚠️ 응답 형식 재조정 중...")
+                print(f"\n⚠️ 응답 형식 재조정 시도...")
                 self.history.append({"role": "system", "content": "오류: JSON 형식으로만 응답하세요."})
                 continue
             
-            thought = llm_response.get('thought', '생각 중...')
-            print(f"\n🤔 에이전트 생각: {thought}")
+            thought = llm_response.get('thought', '다음 작업을 준비합니다.')
+            print(f"\r🤔 생각: {thought}")
             
             if "final_answer" in llm_response:
-                print(f"🏁 최종 답변: {llm_response['final_answer']}")
+                print(f"\n🏁 최종 답변: {llm_response['final_answer']}")
                 break
                 
             action = llm_response.get("action")
@@ -111,9 +112,11 @@ class StudioAgent:
                 elif tool_name == "read_file": result = read_file(**args)
                 elif tool_name == "write_file": 
                     result = write_file(**args)
-                    print(f"   📝 파일 작성 완료: {args.get('file_path')}")
                 elif tool_name == "execute_command": result = execute_command(**args)
                 else: result = "Unknown tool"
+                
+                # 도구 실행 결과를 화면에 출력 (가시성 확보)
+                print(f"📊 실행 결과:\n{result}\n")
                 
                 self.history.append({"role": "assistant", "content": json.dumps(llm_response)})
                 self.history.append({"role": "system", "content": f"Tool Result: {result}"})
