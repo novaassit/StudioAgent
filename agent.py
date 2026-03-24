@@ -262,15 +262,15 @@ class StudioAgent:
                 print(f"\n⚠️ LLM 무응답 ({empty_count}/3). 재시도...")
                 continue
 
-            # JSON 파싱: json.loads 먼저 시도, 실패 시 extract_json_robustly 사용
+            # JSON 파싱: strict=False로 문자열 내 줄바꿈 허용
             llm_response = None
             try:
-                llm_response = json.loads(raw_response.strip())
+                llm_response = json.loads(raw_response.strip(), strict=False)
             except:
                 json_str = extract_json_robustly(raw_response)
                 if json_str:
                     try:
-                        llm_response = json.loads(json_str)
+                        llm_response = json.loads(json_str, strict=False)
                     except:
                         pass
             try:
