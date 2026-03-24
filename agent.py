@@ -65,13 +65,25 @@ class StudioAgent:
             # LLM에게 생각과 행동 물어보기
             llm_response_str = self.call_llm()
             if llm_response_str is None:
-                break # 에러 발생 시 루프 종료
-                
-            try:
-                llm_response = json.loads(llm_response_str)
-            except json.JSONDecodeError:
-                print(f"❌ 에러: LLM이 유효한 JSON을 응답하지 않았습니다: {llm_response_str}")
                 break
+                
+            # 유연한 JSON 파싱: 텍스트 내에서 첫 번째 { } 블록만 추출
+            try:
+                # JSON이 시작되는 첫 { 와 마지막 } 를 찾음
+                start_idx = llm_response_str.find('{')
+                end_idx = llm_response_str.rfind('}')
+                if start_idx != -1 and end_idx != -1:
+                    json_str = llm_response_str[start_idx:end_idx+1]
+                    # 혹시 여러 개의 JSON이 붙어 있는 경우 첫 번째 객체만 가져오기 위해 정교화
+                    # 여기서는 단순화를 위해 전체 블록을 시도하고, 실패 시 대비함
+                    llm_response = json.loads(json_str)
+                else:
+                    raise ValueError("No JSON object found")
+            except (json.JSONDecodeError, ValueError):
+                print(f"❌ 에러: LLM이 유효한 JSON을 응답하지 않았습니다. 다시 시도합니다...")
+                # LLM에게 형식을 지켜달라고 다시 요청
+                self.history.append({"role": "system", "content": "오류: JSON 형식이 올바르지 않습니다. 반드시 하나의 JSON 객체만 응답하세요."})
+                continue
             
             print(f"Agent Thought: {llm_response.get('thought')}")
             
