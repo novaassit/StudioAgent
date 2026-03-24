@@ -9,7 +9,6 @@ import json
 import requests
 import os
 import sys
-import re
 
 # 경로 설정
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -22,24 +21,23 @@ LM_STUDIO_API_BASE = "http://localhost:1234/v1"
 MODEL_NAME = "qwen/qwen3-coder-next"
 
 def extract_json_robustly(text):
-    """마크다운 블록이나 추가 텍스트가 포함된 응답에서 첫 번째 JSON 객체를 추출합니다."""
+    """중첩된 중괄호가 포함된 텍스트에서 가장 바깥쪽의 완성된 JSON 객체를 추출합니다."""
     if not text: return None
     
-    # 1. 마크다운 코드 블록 내부의 내용 추출 시도
-    code_block_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-    if code_block_match:
-        return code_block_match.group(1)
+    # 마크다운 코드 블록 제거 시도 (있다면)
+    text = text.replace("```json", "").replace("```", "").strip()
     
-    # 2. 첫 번째 { 와 마지막 } 사이의 내용 추출 시도
     start_idx = text.find('{')
     if start_idx == -1: return None
     
     brace_count = 0
     for i in range(start_idx, len(text)):
-        if text[i] == '{': brace_count += 1
+        if text[i] == '{':
+            brace_count += 1
         elif text[i] == '}':
             brace_count -= 1
             if brace_count == 0:
+                # 가장 바깥쪽 중괄호가 닫히는 지점까지 반환
                 return text[start_idx:i+1]
     return None
 
@@ -54,8 +52,7 @@ class StudioAgent:
             [지침]
             - 반드시 JSON으로만 응답하라.
             - 한 번에 하나의 Action만 수행하라.
-            - 프로젝트 시작 시 파일이 없다면, 즉시 `index.html` 같은 핵심 파일 생성을 시작하라.
-            - 복잡한 설명 대신 행동(Action)에 집중하라.
+            - 코드 작성 시 index.html, style.css, script.js 순서로 하나씩 완성하라.
             
             [응답 형식]
             {"thought": "계획", "action": {"name": "도구명", "args": {...}}}
@@ -84,9 +81,10 @@ class StudioAgent:
             try:
                 if not json_str: raise ValueError("No JSON found")
                 llm_response = json.loads(json_str)
-            except:
-                print(f"\n⚠️ 형식 오류 발생. LLM 응답 내용:\n{raw_response[:200]}...")
-                self.history.append({"role": "system", "content": "오류: JSON 형식({ ... })으로만 응답해야 합니다."})
+            except Exception as e:
+                print(f"\n⚠️ 파싱 실패. 원인: {e}")
+                print(f"--- 원문 일부 ---\n{raw_response[:300]}...\n----------------")
+                self.history.append({"role": "system", "content": "오류: JSON 형식이 올바르지 않습니다. 중괄호 쌍을 확인하고 유효한 JSON만 응답하세요."})
                 continue
             
             thought = llm_response.get('thought', '진행 중...')
@@ -100,31 +98,23 @@ class StudioAgent:
             if action:
                 name, args = action["name"], action.get("args", {})
                 
-                # 도구 이름 에일리어스 처리 (LLM이 다른 이름을 댈 경우 대비)
-                if name in ["create_file", "update_file", "save_file"]:
-                    name = "write_file"
+                # 도구 에일리어스 및 인자 호환성 처리
+                if name in ["create_file", "update_file", "save_file"]: name = "write_file"
                 
                 print(f"🛠️ 실행: [{name}]")
                 
                 if name == "list_files": result = list_files(**args)
                 elif name == "read_file": result = read_file(**args)
                 elif name == "write_file": 
-                    # 가능한 모든 파일 경로 인자 이름을 체크 (강력한 호환성)
                     path = args.get('file_path') or args.get('filepath') or args.get('path') or args.get('filename') or args.get('file')
                     content = args.get('content', '') or args.get('code', '') or args.get('text', '')
-                    
                     if path:
                         result = write_file(file_path=path, content=content)
-                        print(f"   📝 파일 작성 중: {path}")
+                        print(f"   📝 파일 작성됨: {path}")
                     else:
-                        result = f"Error: Missing file path argument. Received args: {list(args.keys())}"
+                        result = "Error: Missing path"
                 elif name == "execute_command": result = execute_command(**args)
-
                 else: result = f"Unknown tool: {name}"
-                
-                # 결과 가시화
-                display_result = result[:100] + "..." if len(str(result)) > 100 else result
-                print(f"📊 결과: {display_result}")
                 
                 self.history.append({"role": "assistant", "content": json.dumps(llm_response)})
                 self.history.append({"role": "system", "content": f"Tool Result: {result}"})
