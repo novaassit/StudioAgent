@@ -109,13 +109,15 @@ class StudioAgent:
                 if name == "list_files": result = list_files(**args)
                 elif name == "read_file": result = read_file(**args)
                 elif name == "write_file": 
-                    # LLM이 filepath나 file_path 중 하나를 보낼 수 있으므로 호환성 처리
-                    path = args.get('file_path') or args.get('filepath')
-                    content = args.get('content', '')
+                    # 가능한 모든 파일 경로 인자 이름을 체크 (강력한 호환성)
+                    path = args.get('file_path') or args.get('filepath') or args.get('path') or args.get('filename') or args.get('file')
+                    content = args.get('content', '') or args.get('code', '') or args.get('text', '')
+                    
                     if path:
                         result = write_file(file_path=path, content=content)
+                        print(f"   📝 파일 작성 중: {path}")
                     else:
-                        result = "Error: Missing file path argument"
+                        result = f"Error: Missing file path argument. Received args: {list(args.keys())}"
                 elif name == "execute_command": result = execute_command(**args)
 
                 else: result = f"Unknown tool: {name}"
