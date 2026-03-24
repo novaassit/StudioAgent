@@ -264,25 +264,27 @@ class StudioAgent:
 
             # JSON 파싱: strict=False로 문자열 내 줄바꿈 허용
             llm_response = None
+            json_err1 = None
+            json_err2 = None
             try:
                 llm_response = json.loads(raw_response.strip(), strict=False)
-            except:
+            except Exception as e1:
+                json_err1 = str(e1)
                 json_str = extract_json_robustly(raw_response)
                 if json_str:
                     try:
                         llm_response = json.loads(json_str, strict=False)
-                    except:
-                        pass
+                    except Exception as e2:
+                        json_err2 = str(e2)
             try:
                 if not llm_response: raise ValueError("JSON 파싱 실패")
             except Exception as parse_err:
                 self.consecutive_errors += 1
-                print(f"\n⚠️ JSON 파싱 실패 ({self.consecutive_errors}회): {parse_err}")
-                print(f"   raw_response 길이: {len(raw_response)}, 앞 200자: {raw_response[:200]}")
-                if json_str:
-                    print(f"   extract 결과 길이: {len(json_str)}, 앞 200자: {json_str[:200]}")
-                else:
-                    print(f"   extract 결과: None")
+                print(f"\n⚠️ JSON 파싱 실패 ({self.consecutive_errors}회)")
+                print(f"   json.loads 에러: {json_err1}")
+                if json_err2: print(f"   extract+loads 에러: {json_err2}")
+                print(f"   앞 200자: {repr(raw_response[:200])}")
+                print(f"   뒤 200자: {repr(raw_response[-200:])}")
                 # 연속 오류 3회 이상이면 이전 오류 메시지를 정리하고 하나만 유지
                 if self.consecutive_errors >= 3:
                     while len(self.history) > 2 and self.history[-1].get("role") == "user" and "오류" in self.history[-1].get("content", ""):
