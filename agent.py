@@ -89,9 +89,18 @@ class StudioAgent:
                 
             action = llm_response.get("action")
             if action:
-                name = action.get("name")
-                args = action.get("args", {})
+                # action이 문자열인 경우와 딕셔너리인 경우 모두 대응
+                if isinstance(action, str):
+                    name = action
+                    args = {}
+                else:
+                    name = action.get("name")
+                    args = action.get("args", {})
                 
+                if not name:
+                    print("⚠️ 도구 이름이 명시되지 않았습니다.")
+                    continue
+                    
                 # 에일리어스 처리
                 if name in ["create_file", "update_file", "save_file"]: name = "write_file"
                 if name in ["read_code", "get_code", "view_file"]: name = "read_file"
