@@ -26,15 +26,25 @@ class StudioAgent:
         ]
 
     def call_llm(self):
-        response = requests.post(
-            f"{LM_STUDIO_API_BASE}/chat/completions",
-            json={
-                "model": MODEL_NAME,
-                "messages": self.history,
-                "response_format": {"type": "json_object"}
-            }
-        )
-        return response.json()['choices'][0]['message']['content']
+        try:
+            response = requests.post(
+                f"{LM_STUDIO_API_BASE}/chat/completions",
+                json={
+                    "model": MODEL_NAME,
+                    "messages": self.history,
+                    "response_format": {"type": "json_object"}
+                },
+                timeout=60 # 타임아웃 추가
+            )
+            response.raise_for_status()
+            return response.json()['choices'][0]['message']['content']
+        except requests.exceptions.ConnectionError:
+            print(f"\n❌ 에러: LM Studio 서버({LM_STUDIO_API_BASE})에 연결할 수 없습니다.")
+            print("💡 LM Studio가 실행 중인지, 'Local Server'가 활성화되어 있는지 확인해 주세요.")
+            return None
+        except Exception as e:
+            print(f"\n❌ 에러 발생: {str(e)}")
+            return None
 
     def run(self, user_prompt):
         print(f"User: {user_prompt}")
@@ -43,7 +53,14 @@ class StudioAgent:
         while True:
             # LLM에게 생각과 행동 물어보기
             llm_response_str = self.call_llm()
-            llm_response = json.loads(llm_response_str)
+            if llm_response_str is None:
+                break # 에러 발생 시 루프 종료
+                
+            try:
+                llm_response = json.loads(llm_response_str)
+            except json.JSONDecodeError:
+                print(f"❌ 에러: LLM이 유효한 JSON을 응답하지 않았습니다: {llm_response_str}")
+                break
             
             print(f"Agent Thought: {llm_response.get('thought')}")
             
