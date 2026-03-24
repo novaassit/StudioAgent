@@ -56,12 +56,19 @@ class StudioAgent:
             try:
                 payload = {"model": MODEL_NAME, "messages": self.history}
                 response = requests.post(f"{LM_STUDIO_API_BASE}/chat/completions", json=payload, timeout=120)
+                
                 if response.status_code == 200:
                     content = response.json()['choices'][0]['message']['content']
-                    if content: return content
+                    if content:
+                        return content
+                    else:
+                        print(f"\n⚠️ 서버가 빈 응답을 보냈습니다. ({attempt + 1}/{retry_count})")
+                else:
+                    print(f"\n❌ 서버 응답 오류 ({response.status_code}): {response.text}")
                 
-                print(f"\n⚠️ 서버 응답 지연 중... 재시도 ({attempt + 1}/{retry_count})")
                 time.sleep(2)
+            except requests.exceptions.Timeout:
+                print(f"\n⏰ 타임아웃 발생 (120초 초과). 재시도 중... ({attempt + 1}/{retry_count})")
             except Exception as e:
                 print(f"\n❌ 연결 에러: {e}. 재시도 중...")
                 time.sleep(2)
