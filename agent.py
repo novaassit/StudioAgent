@@ -9,6 +9,7 @@ import json
 import requests
 import os
 import sys
+import time
 
 # 경로 설정
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -44,24 +45,27 @@ class StudioAgent:
             {"thought": "생각", "action": {"name": "도구명", "args": {"인자": "값"}}}
             
             [규정]
-            1. `read_file`이나 `write_file`을 쓸 때는 반드시 `args` 안에 `file_path`를 명시하라.
-               예: {"action": {"name": "read_file", "args": {"file_path": "index.html"}}}
-            2. 한 번에 한 단계씩만 진행하라.
-            3. 코드를 수정하기 전에는 반드시 `read_file`로 내용을 먼저 확인하라.
+            1. 도구 사용 시 반드시 `args` 안에 필요한 인자(file_path 등)를 명시하라.
+            2. 코드를 수정하기 전에는 반드시 `read_file`로 내용을 먼저 확인하라.
+            3. 한 번에 한 단계씩만 진행하라.
             """}
         ]
 
-    def call_llm(self):
-        try:
-            payload = {"model": MODEL_NAME, "messages": self.history}
-            response = requests.post(f"{LM_STUDIO_API_BASE}/chat/completions", json=payload, timeout=120)
-            if response.status_code != 200:
-                print(f"\n❌ 서버 에러: {response.status_code}")
-                return None
-            return response.json()['choices'][0]['message']['content']
-        except Exception as e:
-            print(f"\n❌ 연결 에러: {e}")
-            return None
+    def call_llm(self, retry_count=3):
+        for attempt in range(retry_count):
+            try:
+                payload = {"model": MODEL_NAME, "messages": self.history}
+                response = requests.post(f"{LM_STUDIO_API_BASE}/chat/completions", json=payload, timeout=120)
+                if response.status_code == 200:
+                    content = response.json()['choices'][0]['message']['content']
+                    if content: return content
+                
+                print(f"\n⚠️ 서버 응답 지연 중... 재시도 ({attempt + 1}/{retry_count})")
+                time.sleep(2)
+            except Exception as e:
+                print(f"\n❌ 연결 에러: {e}. 재시도 중...")
+                time.sleep(2)
+        return None
 
     def run(self, user_prompt):
         print(f"\n👤 User: {user_prompt}")
@@ -70,15 +74,18 @@ class StudioAgent:
         while True:
             print("\n⏳ 에이전트 생각 중...", end="\r")
             raw_response = self.call_llm()
-            if not raw_response: break
+            
+            if not raw_response:
+                print("\n❌ 서버로부터 응답을 받을 수 없습니다. LM Studio 상태를 확인하세요.")
+                break
                 
             json_str = extract_json_robustly(raw_response)
             try:
                 if not json_str: raise ValueError("JSON missing")
                 llm_response = json.loads(json_str)
             except:
-                print(f"\n⚠️ 형식 재요청 중...")
-                self.history.append({"role": "system", "content": "오류: 반드시 JSON 형식으로 응답하고, 도구 사용 시 args를 포함하세요."})
+                print(f"\n⚠️ 형식 오류. 재교정 요청 중...")
+                self.history.append({"role": "system", "content": "오류: 반드시 유효한 JSON 객체 하나만 응답하세요. (args 포함)"})
                 continue
             
             thought = llm_response.get('thought', '분석 중...')
@@ -107,21 +114,17 @@ class StudioAgent:
                     path = args.get('file_path') or args.get('filepath') or args.get('path') or args.get('filename') or args.get('file')
                     if path:
                         result = read_file(file_path=path)
-                        if result.startswith("Error"):
-                            print(f"   ❌ 읽기 실패: {path}")
-                        else:
-                            print(f"   📖 읽기 완료: {path}")
+                        if result.startswith("Error"): print(f"   ❌ 읽기 실패: {path}")
+                        else: print(f"   📖 읽기 완료: {path}")
                     else:
-                        result = "Error: 파일 경로가 누락되었습니다. 정확한 파일명을 명시하세요."
+                        result = "Error: 파일 경로가 누락되었습니다. args에 'file_path'를 포함하세요."
                 elif name == "write_file":
                     path = args.get('file_path') or args.get('filepath') or args.get('path') or args.get('filename') or args.get('file')
                     content = args.get('content') or args.get('code') or args.get('text')
                     if path and content:
                         result = write_file(file_path=path, content=content)
-                        if result.startswith("Error"):
-                            print(f"   ❌ 작성 실패: {path}")
-                        else:
-                            print(f"   📝 작성 완료: {path}")
+                        if result.startswith("Error"): print(f"   ❌ 작성 실패: {path}")
+                        else: print(f"   📝 작성 완료: {path}")
                     else:
                         result = "Error: file_path 또는 content가 누락되었습니다."
                 elif name == "execute_command":
@@ -130,7 +133,6 @@ class StudioAgent:
                     result = f"Unknown tool: {name}"
                 
                 print(f"📊 결과: {str(result)[:50]}...")
-                
                 self.history.append({"role": "assistant", "content": json.dumps(llm_response)})
                 self.history.append({"role": "system", "content": f"Tool Result: {result}"})
             else:
@@ -140,6 +142,6 @@ if __name__ == "__main__":
     agent = StudioAgent()
     try:
         user_input = input("\n명령 입력 > ")
-        agent.run(user_input)
+        if user_input: agent.run(user_input)
     except KeyboardInterrupt:
         print("\n👋 종료")
