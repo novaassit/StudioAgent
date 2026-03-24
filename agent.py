@@ -35,6 +35,54 @@ def extract_json_robustly(text):
             if brace_count == 0: return text[start_idx:i+1]
     return None
 
+# 알려진 도구 이름 집합
+KNOWN_TOOLS = {"list_files", "read_file", "write_file", "replace_in_file", "execute_command", "final_answer"}
+TOOL_ALIASES = {
+    "list_directory": "list_files", "ls": "list_files",
+    "edit_file": "replace_in_file", "patch": "replace_in_file",
+    "create_file": "write_file", "save_file": "write_file", "update_file": "write_file",
+    "run": "execute_command", "shell": "execute_command", "run_command": "execute_command", "exec": "execute_command",
+}
+
+def normalize_action(action):
+    """LLM이 잘못된 형식으로 보낸 action을 정규화합니다.
+
+    정상: {"name": "replace_in_file", "args": {"file_path": "..."}}
+    비정상1: {"replace_in_file": {"file_path": "..."}}  → name이 key로 들어감
+    비정상2: {"name": "replace_in_file", "file_path": "..."}  → args 없이 flat
+    """
+    if not isinstance(action, dict):
+        return None, {}
+
+    name = action.get("name", "")
+    args = action.get("args", {})
+
+    # 정상 형식
+    if name and name in KNOWN_TOOLS or name in TOOL_ALIASES:
+        if not args:
+            # args가 없으면 name과 알려진 키를 제외한 나머지를 args로
+            args = {k: v for k, v in action.items() if k not in ("name", "thought")}
+        resolved = TOOL_ALIASES.get(name, name)
+        return resolved, args
+
+    # 비정상1: {"replace_in_file": {"file_path": "..."}} — 도구이름이 key로 들어온 경우
+    for key in action:
+        resolved = TOOL_ALIASES.get(key, key)
+        if resolved in KNOWN_TOOLS:
+            val = action[key]
+            if isinstance(val, dict):
+                return resolved, val
+            else:
+                return resolved, {}
+
+    # name이 alias인 경우
+    if name:
+        resolved = TOOL_ALIASES.get(name, name)
+        return resolved, args
+
+    return name, args
+
+
 class StudioAgent:
     def __init__(self):
         print(f"\n🚀 StudioAgent 기동 완료 | 모델: {MODEL_NAME}")
@@ -65,9 +113,10 @@ class StudioAgent:
 - 불필요하게 같은 작업을 반복하지 마라
 """
         self.history = [{"role": "system", "content": self.system_prompt}]
-        self.last_action = None   # 마지막 실행한 (도구명, 핵심인자) 추적
-        self.last_result = None   # 마지막 도구 실행 결과
-        self.action_log = []      # 완료된 작업 요약 기록
+        self.last_action = None
+        self.last_result = None
+        self.action_log = []
+        self.consecutive_errors = 0  # 연속 오류 카운터
 
     def call_llm(self):
         """LLM을 한 번 호출합니다. 히스토리를 오염시키지 않습니다."""
@@ -82,6 +131,9 @@ class StudioAgent:
             if response.status_code == 200:
                 content = response.json()['choices'][0]['message']['content']
                 if content and content.strip():
+                    # LLM 응답이 너무 길면 (반복 생성 감지) 앞부분만 사용
+                    if len(content) > 2000:
+                        content = content[:2000]
                     return content
             return None
         except Exception as e:
@@ -90,12 +142,10 @@ class StudioAgent:
 
     def call_llm_with_retry(self):
         """LLM 호출. 빈 응답 시 힌트를 임시로 추가하여 재시도 (히스토리 오염 없음)."""
-        # 1차 시도: 그대로 호출
         result = self.call_llm()
         if result:
             return result
 
-        # 2차 시도: 힌트를 임시로 추가하여 재시도
         print(f"\n⚠️ 빈 응답, 힌트와 함께 재시도...")
         if self.last_action and self.last_action[0] == "list_files":
             hint = '위 도구 결과를 바탕으로 다음 단계를 진행하세요. 파일 내용을 읽어야 합니다. JSON으로 응답하세요.'
@@ -104,15 +154,13 @@ class StudioAgent:
         else:
             hint = '반드시 JSON 형식으로 응답하세요: {"thought": "생각", "action": {"name": "도구명", "args": {...}}}'
 
-        # 임시로 힌트를 추가하고 호출, 이후 힌트 제거
         self.history.append({"role": "user", "content": hint})
         result = self.call_llm()
-        self.history.pop()  # 힌트 제거 - 히스토리 오염 방지
+        self.history.pop()
 
         if result:
             return result
 
-        # 3차 시도: 더 강한 힌트
         print(f"\n⚠️ 재시도 2...")
         if self.last_action and self.last_action[0] == "list_files":
             strong_hint = f'반드시 JSON으로 응답하라: {{"thought": "파일을 읽겠습니다", "action": {{"name": "read_file", "args": {{"file_path": "index.html"}}}}}}'
@@ -123,7 +171,7 @@ class StudioAgent:
 
         self.history.append({"role": "user", "content": strong_hint})
         result = self.call_llm()
-        self.history.pop()  # 힌트 제거
+        self.history.pop()
 
         return result
 
@@ -144,16 +192,6 @@ class StudioAgent:
         else:
             return f"Unknown tool: {name}. Available: list_files, read_file, write_file, replace_in_file, execute_command"
 
-    def normalize_tool_name(self, name):
-        """LLM이 잘못 부른 도구 이름을 정규화합니다."""
-        aliases = {
-            "list_directory": "list_files", "ls": "list_files",
-            "edit_file": "replace_in_file", "patch": "replace_in_file",
-            "create_file": "write_file", "save_file": "write_file", "update_file": "write_file",
-            "run": "execute_command", "shell": "execute_command", "run_command": "execute_command", "exec": "execute_command",
-        }
-        return aliases.get(name, name)
-
     def run(self, user_prompt):
         print(f"\n👤 User: {user_prompt}")
         self.history.append({"role": "user", "content": user_prompt})
@@ -165,9 +203,8 @@ class StudioAgent:
             raw_response = self.call_llm_with_retry()
 
             if not raw_response:
-                # LLM이 3회 시도 후에도 무응답 → 마지막 도구 결과 기반으로 자동 진행
+                # LLM 무응답 → 마지막 도구 결과 기반 자동 진행
                 if self.last_action and self.last_action[0] == "list_files" and self.last_result:
-                    # list_files 결과에서 첫 번째 파일을 자동으로 read_file
                     first_file = self.last_result.strip().split('\n')[0].strip()
                     if first_file:
                         print(f"\n🤖 자동 진행: LLM 무응답 → read_file({first_file}) 자동 실행")
@@ -175,11 +212,10 @@ class StudioAgent:
                         print(f"📊 결과: {str(result)[:60]}...")
                         self.last_action = ("read_file", first_file)
                         self.last_result = result
-                        self.action_log.append(f"read_file({first_file}): {str(result)[:50]}")
-                        # 히스토리에 마치 LLM이 한 것처럼 추가
+                        self.action_log.append(f"read_file({first_file}): OK")
                         auto_response = {"thought": f"{first_file} 파일을 읽어 내용을 확인합니다.", "action": {"name": "read_file", "args": {"file_path": first_file}}}
                         self.history.append({"role": "assistant", "content": json.dumps(auto_response, ensure_ascii=False)})
-                        self.history.append({"role": "user", "content": f"도구 실행 결과:\n{result}\n\n위 결과를 바탕으로 다음 action을 JSON으로 응답하세요."})
+                        self.history.append({"role": "user", "content": f"도구 실행 결과:\n{result}\n\n위 결과를 바탕으로 수정이 필요한 부분을 찾아 replace_in_file로 수정하세요. JSON으로 응답하세요."})
                         continue
                 print("\n⚠️ LLM 응답 없음. 종료합니다.")
                 break
@@ -189,16 +225,17 @@ class StudioAgent:
             try:
                 if not json_str: raise ValueError("No JSON")
                 llm_response = json.loads(json_str)
-
-                # 자가 치유 (Self-Healing)
-                if "action" not in llm_response and "final_answer" not in llm_response:
-                    if "directory" in llm_response:
-                        llm_response = {"thought": "목록 확인", "action": {"name": "list_files", "args": llm_response}}
-                    elif "file_path" in llm_response:
-                        llm_response = {"thought": "파일 읽기", "action": {"name": "read_file", "args": llm_response}}
             except:
-                self.history.append({"role": "user", "content": "오류! JSON 형식만 사용하세요: {\"thought\": \"...\", \"action\": {...}}"})
+                self.consecutive_errors += 1
+                # 연속 오류 3회 이상이면 이전 오류 메시지를 정리하고 하나만 유지
+                if self.consecutive_errors >= 3:
+                    # 히스토리에서 연속 오류 메시지 제거
+                    while len(self.history) > 2 and self.history[-1].get("role") == "user" and "오류" in self.history[-1].get("content", ""):
+                        self.history.pop()
+                self.history.append({"role": "user", "content": 'JSON 형식 오류. 반드시 이 형식으로 응답: {"thought": "생각", "action": {"name": "도구명", "args": {...}}}'})
                 continue
+
+            self.consecutive_errors = 0  # 성공적으로 파싱되면 리셋
 
             thought = llm_response.get('thought', '진행 중...')
             print(f"\r🤔 생각: {thought}")
@@ -210,11 +247,22 @@ class StudioAgent:
 
             action = llm_response.get("action")
             if not action:
-                self.history.append({"role": "assistant", "content": json.dumps(llm_response, ensure_ascii=False)})
-                continue
+                # action이 없지만 self-healing 시도
+                if "directory" in llm_response:
+                    action = {"name": "list_files", "args": llm_response}
+                elif "file_path" in llm_response:
+                    action = {"name": "read_file", "args": llm_response}
+                else:
+                    self.history.append({"role": "assistant", "content": json.dumps(llm_response, ensure_ascii=False)})
+                    continue
 
-            name = self.normalize_tool_name(action.get("name", ""))
-            args = action.get("args", {})
+            # action 형식 정규화 (잘못된 형식 자동 복구)
+            name, args = normalize_action(action)
+
+            if not name:
+                self.history.append({"role": "assistant", "content": json.dumps(llm_response, ensure_ascii=False)})
+                self.history.append({"role": "user", "content": 'action 형식 오류. 올바른 형식: {"name": "도구명", "args": {"key": "value"}}'})
+                continue
 
             # final_answer를 action으로 보낸 경우
             if name == "final_answer":
@@ -222,13 +270,12 @@ class StudioAgent:
                 print(f"\n🏁 최종 보고: {answer}")
                 break
 
-            # 동일 도구+인자 반복 호출 감지 → 힌트가 아닌 자동 실행
+            # 동일 도구+인자 반복 호출 감지 → 자동 실행
             path = args.get('file_path') or args.get('filepath') or args.get('path')
             current_action = (name, path or args.get('directory', ''))
             if current_action == self.last_action:
                 print(f"⚠️ 동일 도구 반복 감지: [{name}] → 자동 진행")
                 if name == "list_files" and self.last_result:
-                    # list_files 반복 → 첫 번째 파일 자동 read_file
                     first_file = self.last_result.strip().split('\n')[0].strip()
                     if first_file:
                         print(f"🤖 자동 진행: read_file({first_file})")
@@ -236,13 +283,12 @@ class StudioAgent:
                         print(f"📊 결과: {str(result)[:60]}...")
                         self.last_action = ("read_file", first_file)
                         self.last_result = result
-                        self.action_log.append(f"read_file({first_file}): {str(result)[:50]}")
+                        self.action_log.append(f"read_file({first_file}): OK")
                         auto_response = {"thought": f"{first_file} 파일 내용을 확인합니다.", "action": {"name": "read_file", "args": {"file_path": first_file}}}
                         self.history.append({"role": "assistant", "content": json.dumps(auto_response, ensure_ascii=False)})
-                        self.history.append({"role": "user", "content": f"도구 실행 결과:\n{result}\n\n위 결과를 바탕으로 수정할 부분을 찾아 replace_in_file 또는 write_file로 수정하세요. JSON으로 응답하세요."})
+                        self.history.append({"role": "user", "content": f"도구 실행 결과:\n{result}\n\n위 결과를 바탕으로 수정할 부분을 찾아 replace_in_file로 수정하세요. JSON으로 응답하세요."})
                         continue
                 elif name == "read_file":
-                    # read_file 반복 → 이미 읽은 내용으로 수정 유도
                     self.history.append({"role": "assistant", "content": json.dumps(llm_response, ensure_ascii=False)})
                     self.history.append({"role": "user", "content": f"이미 {path} 파일을 읽었습니다. 이제 replace_in_file로 수정하거나 write_file로 덮어쓰세요. JSON으로 응답하세요."})
                     continue
@@ -260,7 +306,6 @@ class StudioAgent:
             self.last_result = result
             self.action_log.append(f"{name}({path or args.get('directory', '.')}): {str(result)[:50]}")
             self.history.append({"role": "assistant", "content": json.dumps(llm_response, ensure_ascii=False)})
-            # Tool Result에 다음 액션 유도 프롬프트 포함
             self.history.append({"role": "user", "content": f"도구 실행 결과:\n{result}\n\n위 결과를 바탕으로 다음 action을 JSON으로 응답하세요."})
 
 if __name__ == "__main__":
