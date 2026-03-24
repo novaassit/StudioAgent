@@ -1,5 +1,20 @@
+# /// script
+# requires-python = ">=3.10"
+# dependencies = [
+#     "requests",
+# ]
+# ///
+
 import json
 import requests
+import os
+import sys
+
+# 실행 파일의 위치를 경로에 추가하여 어디서든 tools를 임포트할 수 있게 함
+script_dir = os.path.dirname(os.path.abspath(__file__))
+if script_dir not in sys.path:
+    sys.path.append(script_dir)
+
 from tools import list_files, read_file, write_file, execute_command
 
 # LM Studio 기본 설정
