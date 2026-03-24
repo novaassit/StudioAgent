@@ -197,6 +197,14 @@ class StudioAgent:
         """도구를 실행하고 결과를 반환합니다."""
         path = args.get('file_path') or args.get('filepath') or args.get('path')
 
+        # LLM 경로 환각 방어: 절대경로(/mnt/data/ 등)를 파일명만 추출하여 보정
+        if path and os.path.isabs(path):
+            basename = os.path.basename(path)
+            if os.path.exists(basename):
+                path = basename
+            else:
+                return f"Error: 절대경로 '{path}'는 사용할 수 없습니다. 상대경로를 사용하세요. (예: {basename})"
+
         if name == "list_files":
             return list_files(directory=args.get('directory', '.'))
         elif name == "read_file":
