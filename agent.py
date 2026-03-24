@@ -362,7 +362,10 @@ class StudioAgent:
             else:
                 result_for_history = result_str
 
-            if name == "replace_in_file" or name == "write_file":
+            if name == "replace_in_file" and "Error" in result_str:
+                # replace_in_file 실패 → write_file 전환 안내
+                self.history.append({"role": "user", "content": f"도구 실행 결과:\n{result_for_history}\n\nreplace_in_file이 실패했습니다. write_file로 전체 파일을 다시 작성하세요."})
+            elif name == "replace_in_file" or name == "write_file":
                 self.history.append({"role": "user", "content": f"도구 실행 결과:\n{result_for_history}\n\n수정이 완료되었으면 final_answer로 보고하세요. 추가 수정이 필요하면 계속하세요."})
             else:
                 self.history.append({"role": "user", "content": f"도구 실행 결과:\n{result_for_history}\n\n위 결과를 바탕으로 다음 action을 JSON으로 응답하세요."})
