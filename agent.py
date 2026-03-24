@@ -100,11 +100,18 @@ class StudioAgent:
                 
                 # 도구 에일리어스 및 인자 호환성 처리
                 if name in ["create_file", "update_file", "save_file"]: name = "write_file"
+                if name in ["read_code", "get_code", "view_file"]: name = "read_file"
                 
                 print(f"🛠️ 실행: [{name}]")
                 
                 if name == "list_files": result = list_files(**args)
-                elif name == "read_file": result = read_file(**args)
+                elif name == "read_file": 
+                    path = args.get('file_path') or args.get('filepath') or args.get('path') or args.get('filename') or args.get('file')
+                    if path:
+                        result = read_file(file_path=path)
+                        print(f"   📖 파일 읽기 완료: {path}")
+                    else:
+                        result = "Error: Missing path for read_file"
                 elif name == "write_file": 
                     path = args.get('file_path') or args.get('filepath') or args.get('path') or args.get('filename') or args.get('file')
                     content = args.get('content', '') or args.get('code', '') or args.get('text', '')
