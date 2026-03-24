@@ -143,7 +143,11 @@ class StudioAgent:
             response = requests.post(f"{LM_STUDIO_API_BASE}/chat/completions", json=payload, timeout=120)
 
             if response.status_code == 200:
-                content = response.json()['choices'][0]['message']['content']
+                resp_json = response.json()
+                content = resp_json.get('choices', [{}])[0].get('message', {}).get('content', '')
+                # 일부 모델은 reasoning_content에 응답을 넣음
+                if not content or not content.strip():
+                    content = resp_json.get('choices', [{}])[0].get('message', {}).get('reasoning_content', '')
                 if content and content.strip():
                     # LLM 응답이 너무 길면 유효 JSON만 추출 (반복 생성 방지)
                     if len(content) > 4000:
@@ -153,6 +157,10 @@ class StudioAgent:
                         else:
                             content = content[:4000]
                     return content
+                else:
+                    print(f"\n⚠️ DEBUG: status=200 but empty content. Keys: {list(resp_json.get('choices', [{}])[0].get('message', {}).keys())}")
+            else:
+                print(f"\n⚠️ DEBUG: status={response.status_code}")
             return None
         except Exception as e:
             print(f"\n❌ LLM 호출 에러: {e}")
